@@ -2,8 +2,12 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
-import { Moon, Sun, Settings, TrendingUp, TrendingDown, Activity, Zap, BarChart3, Clock, DollarSign, Send, Save, Loader2 } from 'lucide-react'
+import { Moon, Sun, Settings, TrendingUp, TrendingDown, Activity, Zap, BarChart3, Clock, DollarSign, Send, Save, Loader2, Wallet, ExternalLink, Copy, Check } from 'lucide-react'
+import { ConnectButton } from '@rainbow-me/rainbowkit'
+import { useAccount, useBalance, useChainId, useSwitchChain } from 'wagmi'
+import { formatEther } from 'viem'
 import { supabase, saveTrade, getTrades, getStats, Trade as DBTrade } from '@/lib/supabase'
+import { inkChain, inkSepolia } from '@/lib/wagmi'
 
 interface BotConfig {
   pair: string
@@ -42,6 +46,7 @@ export default function Home() {
   const [isRunning, setIsRunning] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [copied, setCopied] = useState(false)
   const [config, setConfig] = useState<BotConfig>({
     pair: 'ETH-USDC',
     margin: 100,
@@ -70,6 +75,23 @@ export default function Home() {
   const [priceChange, setPriceChange] = useState(0)
   const [priceHistory, setPriceHistory] = useState<PricePoint[]>([])
   const [dbConnected, setDbConnected] = useState(false)
+
+  // Wagmi hooks
+  const { address, isConnected } = useAccount()
+  const chainId = useChainId()
+  const { switchChain } = useSwitchChain()
+  const { data: ethBalance } = useBalance({
+    address: address,
+  })
+
+  // Copy address to clipboard
+  const copyAddress = () => {
+    if (address) {
+      navigator.clipboard.writeText(address)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }
 
   // Send telegram message
   const sendTelegram = useCallback(async (message: string) => {
@@ -207,7 +229,6 @@ export default function Home() {
 
       const newPnL = Math.round((stats.totalPnL + pnl) * 100) / 100
 
-      // PnL threshold alert
       if (telegramSettings.enabled && telegramSettings.notifyOnPnL && Math.abs(newPnL) >= telegramSettings.pnlThreshold) {
         sendTelegram(`⚠️ <b>PnL Alert</b>\n\nTotal PnL: ${newPnL >= 0 ? '+' : ''}$${newPnL.toFixed(2)}\nThreshold: $${telegramSettings.pnlThreshold}`)
       }
@@ -274,12 +295,10 @@ export default function Home() {
 
   const handleStartStop = () => {
     if (!isRunning) {
-      // Starting
       if (telegramSettings.enabled && telegramSettings.botToken) {
         sendTelegram('🚀 <b>Nado MM Bot Started!</b>\n\nPair: ' + config.pair + '\nMargin: $' + config.margin + '\nLeverage: ' + config.leverage + 'x')
       }
     } else {
-      // Stopping
       if (telegramSettings.enabled && telegramSettings.botToken) {
         sendTelegram('🛑 <b>Nado MM Bot Stopped</b>\n\nTotal PnL: ' + (stats.totalPnL >= 0 ? '+' : '') + '$' + stats.totalPnL.toFixed(2) + '\nTrades: ' + stats.tradesCount)
       }
@@ -301,30 +320,66 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* DB Status */}
-          <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs ${dbConnected ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-400'}`}>
-            {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-            {dbConnected ? 'DB Connected' : 'DB Error'}
-          </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Wallet Connect Button */}
+          <ConnectButton.Custom>
+            {({ account, chain, openAccountModal, openChainModal, openConnectModal, mounted }) => {
+              const ready = mounted
+              const connected = ready && account && chain
 
-          {/* Price Display */}
-          <div className="glass-card px-4 py-2">
-            <div className="flex items-center gap-3">
-              <div>
-                <p className="text-xs text-[var(--foreground-dim)]">{config.pair}</p>
-                <p className="text-lg font-mono font-semibold">${currentPrice.toLocaleString()}</p>
-              </div>
-              <div className={`flex items-center gap-1 px-2 py-1 rounded-lg text-sm font-mono ${
-                priceChange >= 0
-                  ? 'bg-[var(--accent-green)]/10 text-[var(--accent-green)]'
-                  : 'bg-[var(--accent-red)]/10 text-[var(--accent-red)]'
-              }`}>
-                {priceChange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(2)}
-              </div>
-            </div>
-          </div>
+              return (
+                <div
+                  {...(!ready && {
+                    'aria-hidden': true,
+                    style: {
+                      opacity: 0,
+                      pointerEvents: 'none',
+                      userSelect: 'none',
+                    },
+                  })}
+                >
+                  {(() => {
+                    if (!connected) {
+                      return (
+                        <button
+                          onClick={openConnectModal}
+                          className="btn-primary flex items-center gap-2 py-2.5 px-4"
+                        >
+                          <Wallet className="w-4 h-4" />
+                          Connect Wallet
+                        </button>
+                      )
+                    }
+
+                    return (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={openChainModal}
+                          className="glass-card px-3 py-2 flex items-center gap-2 hover:border-[var(--accent-primary)] transition-all"
+                        >
+                          {chain.hasIcon && chain.iconUrl && (
+                            <img src={chain.iconUrl} alt={chain.name || 'Chain'} className="w-5 h-5 rounded-full" />
+                          )}
+                          <span className="text-sm font-medium">{chain.name}</span>
+                        </button>
+
+                        <button
+                          onClick={openAccountModal}
+                          className="glass-card px-3 py-2 flex items-center gap-2 hover:border-[var(--accent-primary)] transition-all"
+                        >
+                          <div className="w-5 h-5 rounded-full bg-gradient-to-br from-[#8b5cf6] to-[#7c3aed]" />
+                          <span className="text-sm font-mono">{account.displayName}</span>
+                          <span className="text-sm text-[var(--foreground-muted)]">
+                            {account.displayBalance}
+                          </span>
+                        </button>
+                      </div>
+                    )
+                  })()}
+                </div>
+              )
+            }}
+          </ConnectButton.Custom>
 
           {/* Status */}
           <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--card-bg)]">
@@ -350,14 +405,79 @@ export default function Home() {
         </div>
       </header>
 
+      {/* Wallet Info Card - Show when connected */}
+      {isConnected && address && (
+        <div className="glass-card p-4 mb-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#8b5cf6] to-[#7c3aed] flex items-center justify-center">
+                <Wallet className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <p className="text-sm text-[var(--foreground-dim)]">Connected Wallet</p>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm">
+                    {address.slice(0, 6)}...{address.slice(-4)}
+                  </span>
+                  <button onClick={copyAddress} className="text-[var(--foreground-dim)] hover:text-[var(--foreground)]">
+                    {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                  <a
+                    href={`https://explorer.inkonchain.com/address/${address}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[var(--foreground-dim)] hover:text-[var(--foreground)]"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-6">
+              <div>
+                <p className="text-xs text-[var(--foreground-dim)]">ETH Balance</p>
+                <p className="text-lg font-mono font-semibold">
+                  {ethBalance ? parseFloat(formatEther(ethBalance.value)).toFixed(4) : '0.0000'} ETH
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-[var(--foreground-dim)]">Network</p>
+                <p className="text-lg font-semibold text-[var(--accent-primary)]">
+                  {chainId === inkChain.id ? 'Ink Mainnet' : chainId === inkSepolia.id ? 'Ink Sepolia' : 'Other'}
+                </p>
+              </div>
+              {chainId !== inkChain.id && chainId !== inkSepolia.id && (
+                <button
+                  onClick={() => switchChain({ chainId: inkChain.id })}
+                  className="btn-secondary text-sm"
+                >
+                  Switch to Ink
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Price Chart */}
       <div className="glass-card p-5 mb-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold flex items-center gap-2">
             <Activity className="w-5 h-5 text-[var(--accent-primary)]" />
-            Price Chart
+            {config.pair} Price
           </h2>
-          <span className="text-sm text-[var(--foreground-dim)]">Last 30 updates</span>
+          <div className="flex items-center gap-3">
+            <div className={`flex items-center gap-1 px-2 py-1 rounded-lg text-sm font-mono ${
+              priceChange >= 0
+                ? 'bg-[var(--accent-green)]/10 text-[var(--accent-green)]'
+                : 'bg-[var(--accent-red)]/10 text-[var(--accent-red)]'
+            }`}>
+              {priceChange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+              {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(2)}
+            </div>
+            <span className="text-2xl font-mono font-bold">${currentPrice.toLocaleString()}</span>
+          </div>
         </div>
         <div className="h-[180px]">
           <ResponsiveContainer width="100%" height="100%">
@@ -484,11 +604,16 @@ export default function Home() {
 
               <button
                 onClick={handleStartStop}
+                disabled={!isConnected}
                 className={`w-full py-3.5 rounded-xl font-semibold text-base transition-all ${
-                  isRunning ? 'btn-danger' : 'btn-primary'
+                  !isConnected
+                    ? 'bg-[var(--card-bg)] text-[var(--foreground-dim)] cursor-not-allowed'
+                    : isRunning
+                    ? 'btn-danger'
+                    : 'btn-primary'
                 }`}
               >
-                {isRunning ? 'Stop Bot' : 'Start Bot'}
+                {!isConnected ? 'Connect Wallet First' : isRunning ? 'Stop Bot' : 'Start Bot'}
               </button>
             </div>
           </div>
@@ -525,6 +650,12 @@ export default function Home() {
               </div>
               <p className="text-xl font-bold font-mono text-[var(--accent-primary)]">{stats.uptime}</p>
             </div>
+          </div>
+
+          {/* DB Status */}
+          <div className={`glass-card p-3 flex items-center justify-center gap-2 ${dbConnected ? 'border-green-500/30' : 'border-red-500/30'}`}>
+            {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            <span className="text-sm">{dbConnected ? 'Database Connected' : 'Database Error'}</span>
           </div>
         </div>
 
@@ -597,7 +728,9 @@ export default function Home() {
                   <Zap className="w-7 h-7 text-[var(--foreground-dim)]" />
                 </div>
                 <p className="text-[var(--foreground-muted)]">No trades yet</p>
-                <p className="text-sm text-[var(--foreground-dim)]">Start the bot to begin trading</p>
+                <p className="text-sm text-[var(--foreground-dim)]">
+                  {isConnected ? 'Start the bot to begin trading' : 'Connect wallet to start'}
+                </p>
               </div>
             ) : (
               <div className="overflow-x-auto max-h-[300px]">
@@ -643,7 +776,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="mt-8 pt-6 border-t border-[var(--card-border)] text-center">
         <p className="text-sm text-[var(--foreground-dim)]">
-          Nado MM Bot v0.3 · Ink Chain · {dbConnected ? 'DB Connected' : 'Demo Mode'}
+          Nado MM Bot v0.4 · Ink Chain · {isConnected ? 'Wallet Connected' : 'Demo Mode'}
         </p>
       </footer>
 
