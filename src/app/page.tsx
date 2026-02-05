@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
-import { Moon, Sun, Settings, Bell, BellOff, TrendingUp, TrendingDown, Activity, Zap, BarChart3, Clock, DollarSign, Send } from 'lucide-react'
+import { Moon, Sun, Settings, TrendingUp, TrendingDown, Activity, Zap, BarChart3, Clock, DollarSign, Send, Save, Loader2 } from 'lucide-react'
+import { supabase, saveTrade, getTrades, getStats, Trade as DBTrade } from '@/lib/supabase'
 
 interface BotConfig {
   pair: string
@@ -30,6 +31,7 @@ interface PricePoint {
 interface TelegramSettings {
   enabled: boolean
   chatId: string
+  botToken: string
   notifyOnTrade: boolean
   notifyOnPnL: boolean
   pnlThreshold: number
@@ -39,6 +41,7 @@ export default function Home() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [isRunning, setIsRunning] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
   const [config, setConfig] = useState<BotConfig>({
     pair: 'ETH-USDC',
     margin: 100,
@@ -49,7 +52,8 @@ export default function Home() {
   })
   const [telegramSettings, setTelegramSettings] = useState<TelegramSettings>({
     enabled: false,
-    chatId: '',
+    chatId: '6329588659',
+    botToken: '',
     notifyOnTrade: true,
     notifyOnPnL: true,
     pnlThreshold: 10,
@@ -65,7 +69,26 @@ export default function Home() {
   const [currentPrice, setCurrentPrice] = useState(2450.50)
   const [priceChange, setPriceChange] = useState(0)
   const [priceHistory, setPriceHistory] = useState<PricePoint[]>([])
-  const [activeTab, setActiveTab] = useState<'trades' | 'settings'>('trades')
+  const [dbConnected, setDbConnected] = useState(false)
+
+  // Send telegram message
+  const sendTelegram = useCallback(async (message: string) => {
+    if (!telegramSettings.enabled || !telegramSettings.botToken || !telegramSettings.chatId) return
+
+    try {
+      await fetch(`https://api.telegram.org/bot${telegramSettings.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: telegramSettings.chatId,
+          text: message,
+          parse_mode: 'HTML'
+        })
+      })
+    } catch (error) {
+      console.error('Telegram error:', error)
+    }
+  }, [telegramSettings])
 
   // Theme effect
   useEffect(() => {
@@ -84,6 +107,40 @@ export default function Home() {
     if (saved) setTelegramSettings(JSON.parse(saved))
   }, [])
 
+  // Load stats from DB on mount
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const dbStats = await getStats()
+        if (dbStats.tradesCount > 0) {
+          setStats(prev => ({
+            ...prev,
+            totalPnL: dbStats.totalPnL,
+            totalVolume: dbStats.totalVolume,
+            tradesCount: dbStats.tradesCount,
+          }))
+        }
+
+        const dbTrades = await getTrades(20)
+        if (dbTrades.length > 0) {
+          setTrades(dbTrades.map((t: DBTrade) => ({
+            id: Date.now() + Math.random(),
+            time: new Date(t.created_at || '').toLocaleTimeString(),
+            side: t.side as 'LONG' | 'SHORT',
+            price: Number(t.price),
+            amount: Number(t.amount),
+            pnl: Number(t.pnl),
+          })))
+        }
+
+        setDbConnected(true)
+      } catch (error) {
+        console.error('DB load error:', error)
+      }
+    }
+    loadData()
+  }, [])
+
   // Simulate price updates
   useEffect(() => {
     const interval = setInterval(() => {
@@ -98,7 +155,7 @@ export default function Home() {
             price: newPrice
           }
           const updated = [...prevHistory, newPoint]
-          return updated.slice(-30) // Keep last 30 points
+          return updated.slice(-30)
         })
 
         return newPrice
@@ -111,30 +168,61 @@ export default function Home() {
   useEffect(() => {
     if (!isRunning) return
 
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       const side = Math.random() > 0.5 ? 'LONG' : 'SHORT'
       const pnl = (Math.random() - 0.4) * 2
+      const tradePrice = currentPrice + (Math.random() - 0.5) * 5
+      const amount = Math.round(Math.random() * 100) / 100
+
       const newTrade: Trade = {
         id: Date.now(),
         time: new Date().toLocaleTimeString(),
         side,
-        price: currentPrice + (Math.random() - 0.5) * 5,
-        amount: Math.round(Math.random() * 100) / 100,
+        price: tradePrice,
+        amount,
         pnl: Math.round(pnl * 100) / 100,
       }
 
+      // Save to Supabase
+      setIsSaving(true)
+      await saveTrade({
+        pair: config.pair,
+        side,
+        price: tradePrice,
+        amount,
+        pnl: Math.round(pnl * 100) / 100,
+        margin: config.margin,
+        leverage: config.leverage,
+      })
+      setIsSaving(false)
+
+      // Send telegram notification
+      if (telegramSettings.enabled && telegramSettings.notifyOnTrade) {
+        const emoji = side === 'LONG' ? '🟢' : '🔴'
+        const pnlEmoji = pnl >= 0 ? '💰' : '📉'
+        sendTelegram(`${emoji} <b>Nado Trade</b>\n\n${config.pair} ${side}\nPrice: $${tradePrice.toFixed(2)}\nSize: ${amount}\n${pnlEmoji} PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`)
+      }
+
       setTrades(prev => [newTrade, ...prev.slice(0, 19)])
+
+      const newPnL = Math.round((stats.totalPnL + pnl) * 100) / 100
+
+      // PnL threshold alert
+      if (telegramSettings.enabled && telegramSettings.notifyOnPnL && Math.abs(newPnL) >= telegramSettings.pnlThreshold) {
+        sendTelegram(`⚠️ <b>PnL Alert</b>\n\nTotal PnL: ${newPnL >= 0 ? '+' : ''}$${newPnL.toFixed(2)}\nThreshold: $${telegramSettings.pnlThreshold}`)
+      }
+
       setStats(prev => ({
         ...prev,
-        totalPnL: Math.round((prev.totalPnL + pnl) * 100) / 100,
-        totalVolume: Math.round((prev.totalVolume + newTrade.amount * currentPrice) * 100) / 100,
+        totalPnL: newPnL,
+        totalVolume: Math.round((prev.totalVolume + amount * currentPrice) * 100) / 100,
         tradesCount: prev.tradesCount + 1,
         winRate: Math.round(Math.random() * 30 + 50),
       }))
     }, 3000)
 
     return () => clearInterval(interval)
-  }, [isRunning, currentPrice])
+  }, [isRunning, currentPrice, config, telegramSettings, sendTelegram, stats.totalPnL])
 
   // Uptime counter
   useEffect(() => {
@@ -158,11 +246,45 @@ export default function Home() {
   }
 
   const testTelegram = async () => {
-    if (!telegramSettings.chatId) {
-      alert('Chat ID를 입력해주세요')
+    if (!telegramSettings.botToken || !telegramSettings.chatId) {
+      alert('Bot Token과 Chat ID를 모두 입력해주세요')
       return
     }
-    alert('텔레그램 테스트 메시지 전송! (실제 연동 시 작동)')
+
+    try {
+      const response = await fetch(`https://api.telegram.org/bot${telegramSettings.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: telegramSettings.chatId,
+          text: '🤖 Nado MM Bot 연결 테스트 성공!',
+          parse_mode: 'HTML'
+        })
+      })
+
+      if (response.ok) {
+        alert('✅ 텔레그램 메시지 전송 성공!')
+      } else {
+        alert('❌ 전송 실패 - Token이나 Chat ID를 확인해주세요')
+      }
+    } catch (error) {
+      alert('❌ 오류 발생')
+    }
+  }
+
+  const handleStartStop = () => {
+    if (!isRunning) {
+      // Starting
+      if (telegramSettings.enabled && telegramSettings.botToken) {
+        sendTelegram('🚀 <b>Nado MM Bot Started!</b>\n\nPair: ' + config.pair + '\nMargin: $' + config.margin + '\nLeverage: ' + config.leverage + 'x')
+      }
+    } else {
+      // Stopping
+      if (telegramSettings.enabled && telegramSettings.botToken) {
+        sendTelegram('🛑 <b>Nado MM Bot Stopped</b>\n\nTotal PnL: ' + (stats.totalPnL >= 0 ? '+' : '') + '$' + stats.totalPnL.toFixed(2) + '\nTrades: ' + stats.tradesCount)
+      }
+    }
+    setIsRunning(!isRunning)
   }
 
   return (
@@ -170,7 +292,6 @@ export default function Home() {
       {/* Header */}
       <header className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
         <div className="flex items-center gap-4">
-          {/* Nado Logo */}
           <div className="logo-float w-12 h-12 rounded-2xl bg-gradient-to-br from-[#8b5cf6] to-[#7c3aed] flex items-center justify-center shadow-lg">
             <Zap className="w-7 h-7 text-white" />
           </div>
@@ -180,7 +301,13 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          {/* DB Status */}
+          <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs ${dbConnected ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-400'}`}>
+            {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+            {dbConnected ? 'DB Connected' : 'DB Error'}
+          </div>
+
           {/* Price Display */}
           <div className="glass-card px-4 py-2">
             <div className="flex items-center gap-3">
@@ -279,7 +406,7 @@ export default function Home() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-        {/* Left Column - Configuration */}
+        {/* Left Column */}
         <div className="xl:col-span-4 space-y-6">
           {/* Bot Configuration */}
           <div className="glass-card p-6">
@@ -356,7 +483,7 @@ export default function Home() {
               </div>
 
               <button
-                onClick={() => setIsRunning(!isRunning)}
+                onClick={handleStartStop}
                 className={`w-full py-3.5 rounded-xl font-semibold text-base transition-all ${
                   isRunning ? 'btn-danger' : 'btn-primary'
                 }`}
@@ -401,7 +528,7 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Right Column - Order Book & Trades */}
+        {/* Right Column */}
         <div className="xl:col-span-8 space-y-6">
           {/* Order Book */}
           <div className="glass-card p-6">
@@ -410,7 +537,6 @@ export default function Home() {
               Order Book
             </h2>
             <div className="grid grid-cols-2 gap-6">
-              {/* Bids */}
               <div>
                 <div className="flex justify-between text-xs text-[var(--foreground-dim)] mb-2 px-2">
                   <span>PRICE (BID)</span>
@@ -431,7 +557,6 @@ export default function Home() {
                   )
                 })}
               </div>
-              {/* Asks */}
               <div>
                 <div className="flex justify-between text-xs text-[var(--foreground-dim)] mb-2 px-2">
                   <span>SIZE</span>
@@ -460,6 +585,11 @@ export default function Home() {
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <Clock className="w-5 h-5 text-[var(--accent-yellow)]" />
               Recent Trades
+              {stats.tradesCount > 0 && (
+                <span className="text-xs bg-[var(--accent-primary)]/20 text-[var(--accent-primary)] px-2 py-0.5 rounded-full ml-2">
+                  {stats.tradesCount} total
+                </span>
+              )}
             </h2>
             {trades.length === 0 ? (
               <div className="text-center py-10">
@@ -513,7 +643,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="mt-8 pt-6 border-t border-[var(--card-border)] text-center">
         <p className="text-sm text-[var(--foreground-dim)]">
-          Nado MM Bot v0.2 · Ink Chain · Demo Mode
+          Nado MM Bot v0.3 · Ink Chain · {dbConnected ? 'DB Connected' : 'Demo Mode'}
         </p>
       </footer>
 
@@ -523,11 +653,11 @@ export default function Home() {
           <div className="modal-content" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-semibold flex items-center gap-2">
-                <Bell className="w-5 h-5 text-[var(--accent-primary)]" />
+                <Send className="w-5 h-5 text-[var(--accent-primary)]" />
                 Telegram Settings
               </h2>
-              <button onClick={() => setShowSettings(false)} className="text-[var(--foreground-dim)] hover:text-[var(--foreground)]">
-                ✕
+              <button onClick={() => setShowSettings(false)} className="text-[var(--foreground-dim)] hover:text-[var(--foreground)] text-xl">
+                ×
               </button>
             </div>
 
@@ -544,12 +674,23 @@ export default function Home() {
               </div>
 
               <div>
-                <label className="text-sm text-[var(--foreground-muted)] mb-2 block">Telegram Chat ID</label>
+                <label className="text-sm text-[var(--foreground-muted)] mb-2 block">Bot Token</label>
+                <input
+                  type="text"
+                  value={telegramSettings.botToken}
+                  onChange={(e) => setTelegramSettings({...telegramSettings, botToken: e.target.value})}
+                  placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
+                />
+                <p className="text-xs text-[var(--foreground-dim)] mt-1">@BotFather에서 생성한 토큰</p>
+              </div>
+
+              <div>
+                <label className="text-sm text-[var(--foreground-muted)] mb-2 block">Chat ID</label>
                 <input
                   type="text"
                   value={telegramSettings.chatId}
                   onChange={(e) => setTelegramSettings({...telegramSettings, chatId: e.target.value})}
-                  placeholder="예: 6329588659"
+                  placeholder="6329588659"
                 />
               </div>
 
