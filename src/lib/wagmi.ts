@@ -1,6 +1,7 @@
-import { http, createConfig } from 'wagmi'
+import { getDefaultConfig } from '@rainbow-me/rainbowkit'
+import { http } from 'wagmi'
 import { mainnet, arbitrum, base, optimism } from 'wagmi/chains'
-import { injected, walletConnect } from 'wagmi/connectors'
+import { type Chain } from 'viem'
 
 // Ink Chain (Kraken L2) - Custom Chain Definition
 export const inkChain = {
@@ -13,12 +14,11 @@ export const inkChain = {
   },
   rpcUrls: {
     default: { http: ['https://rpc-gel.inkonchain.com'] },
-    public: { http: ['https://rpc-gel.inkonchain.com'] },
   },
   blockExplorers: {
     default: { name: 'Ink Explorer', url: 'https://explorer.inkonchain.com' },
   },
-} as const
+} as const satisfies Chain
 
 // Ink Sepolia (Testnet)
 export const inkSepolia = {
@@ -31,19 +31,17 @@ export const inkSepolia = {
   },
   rpcUrls: {
     default: { http: ['https://rpc-gel-sepolia.inkonchain.com'] },
-    public: { http: ['https://rpc-gel-sepolia.inkonchain.com'] },
   },
   blockExplorers: {
     default: { name: 'Ink Sepolia Explorer', url: 'https://explorer-sepolia.inkonchain.com' },
   },
   testnet: true,
-} as const
+} as const satisfies Chain
 
-export const config = createConfig({
+export const config = getDefaultConfig({
+  appName: 'Nado MM Bot',
+  projectId: 'nado-mm-bot', // WalletConnect project ID (can be any string for local dev)
   chains: [inkChain, inkSepolia, mainnet, arbitrum, base, optimism],
-  connectors: [
-    injected(),
-  ],
   transports: {
     [inkChain.id]: http(),
     [inkSepolia.id]: http(),

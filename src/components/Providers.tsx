@@ -11,9 +11,11 @@ import '@rainbow-me/rainbowkit/styles.css'
 const queryClient = new QueryClient()
 
 export function Providers({ children }: { children: React.ReactNode }) {
+  const [mounted, setMounted] = useState(false)
   const [theme, setTheme] = useState<'dark' | 'light'>('dark')
 
   useEffect(() => {
+    setMounted(true)
     const saved = localStorage.getItem('nado-theme') as 'dark' | 'light'
     if (saved) setTheme(saved)
 
@@ -27,6 +29,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
     return () => observer.disconnect()
   }, [])
+
+  if (!mounted) return null
 
   return (
     <WagmiProvider config={config}>
