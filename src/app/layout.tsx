@@ -13,8 +13,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MM Bot - Market Making Dashboard",
-  description: "Personal Market Making Bot Dashboard for DEX Trading",
+  title: "Nado MM Bot - Market Making Dashboard",
+  description: "Personal Market Making Bot Dashboard for Nado DEX on Ink Chain",
+  icons: {
+    icon: '/favicon.ico',
+  },
 };
 
 export default function RootLayout({
@@ -23,7 +26,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
