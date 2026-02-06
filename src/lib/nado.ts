@@ -13,9 +13,9 @@ import BigNumber from 'bignumber.js'
 // Configure BigNumber for precision
 BigNumber.config({ DECIMAL_PLACES: 18, ROUNDING_MODE: BigNumber.ROUND_DOWN })
 
-// API Endpoints
-export const NADO_TESTNET = 'https://gateway.test.nado.xyz/v2'
-export const NADO_MAINNET = 'https://gateway.nado.xyz/v2'
+// API Endpoints (from @nadohq/engine-client)
+export const NADO_TESTNET = 'https://gateway.test.nado.xyz/v1'
+export const NADO_MAINNET = 'https://gateway.prod.nado.xyz/v1'
 
 // Use mainnet for real trading
 export const NADO_API = NADO_MAINNET
@@ -63,12 +63,12 @@ export interface NadoOrderEIP712Message {
   appendix: bigint
 }
 
-// Product IDs on Nado (market identifiers)
+// Product IDs on Nado (from API response - perp products)
 export const NADO_PRODUCTS: Record<string, number> = {
-  'BTC-USDC': 1,
-  'ETH-USDC': 2,
-  'SOL-USDC': 3,
-  'INK-USDC': 4, // Likely product ID, may need to verify
+  'BTC-USDC': 2,  // BTC perpetual
+  'ETH-USDC': 4,  // ETH perpetual
+  'SOL-USDC': 8,  // SOL perpetual
+  'INK-USDC': 42, // INK perpetual (from API)
 }
 
 // Interfaces
@@ -158,9 +158,13 @@ export function addressToSubaccount(address: `0x${string}`, subaccountName: stri
 // API: Get products (markets) info
 export async function getProducts(): Promise<NadoProduct[]> {
   try {
-    const response = await fetch(`${NADO_API}/products`, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
+    const response = await fetch(`${NADO_API}/query`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept-Encoding': 'gzip, deflate',
+      },
+      body: JSON.stringify({ type: 'all_products' }),
     })
 
     if (!response.ok) {
@@ -168,7 +172,8 @@ export async function getProducts(): Promise<NadoProduct[]> {
     }
 
     const data = await response.json()
-    return data.products || []
+    // Extract perp products for trading
+    return data.data?.perp_products || []
   } catch (error) {
     console.error('Nado getProducts error:', error)
     throw error

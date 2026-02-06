@@ -241,17 +241,16 @@ export function useNado(): UseNadoReturn {
     return NADO_PRODUCTS[pair]
   }, [])
 
-  // Auto-fetch products on mount
-  useEffect(() => {
-    fetchProducts()
-  }, [fetchProducts])
+  // Disable auto-fetch for now - API format needs adjustment
+  // useEffect(() => {
+  //   fetchProducts()
+  // }, [fetchProducts])
 
-  // Auto-fetch positions when wallet connected
-  useEffect(() => {
-    if (isConnected && address) {
-      fetchPositions()
-    }
-  }, [isConnected, address, fetchPositions])
+  // useEffect(() => {
+  //   if (isConnected && address) {
+  //     fetchPositions()
+  //   }
+  // }, [isConnected, address, fetchPositions])
 
   return {
     isLoading,
