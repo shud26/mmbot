@@ -8,6 +8,7 @@ export interface UseNadoReturn {
   // State
   isLoading: boolean
   error: string | null
+  clientReady: boolean // Is Nado client initialized?
   pendingOrders: { digest: string; side: 'LONG' | 'SHORT'; price: number; amount: number }[]
 
   // Actions
@@ -42,18 +43,30 @@ export function useNado(): UseNadoReturn {
 
   // Create Nado client when wallet is connected
   const nadoClient = useMemo(() => {
-    if (!walletClient || !publicClient) return null
+    console.log('[Nado] Creating client...', {
+      hasWalletClient: !!walletClient,
+      hasPublicClient: !!publicClient
+    })
+
+    if (!walletClient || !publicClient) {
+      console.log('[Nado] Missing client - walletClient or publicClient is null')
+      return null
+    }
 
     try {
-      return createNadoClient('inkMainnet', {
+      const client = createNadoClient('inkMainnet', {
         walletClient: walletClient as any,
         publicClient: publicClient as any,
       })
+      console.log('[Nado] Client created successfully!', client)
+      return client
     } catch (err) {
-      console.error('Failed to create Nado client:', err)
+      console.error('[Nado] Failed to create client:', err)
       return null
     }
   }, [walletClient, publicClient])
+
+  const clientReady = !!nadoClient
 
   // Submit a single order
   const submitOrder = useCallback(
@@ -183,6 +196,7 @@ export function useNado(): UseNadoReturn {
   return {
     isLoading,
     error,
+    clientReady,
     pendingOrders,
     submitOrder,
     submitMarketMakingOrders,

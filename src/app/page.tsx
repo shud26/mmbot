@@ -91,6 +91,7 @@ export default function Home() {
   const {
     isLoading: nadoLoading,
     error: nadoError,
+    clientReady: nadoClientReady,
     pendingOrders,
     submitOrder,
     submitMarketMakingOrders,
@@ -207,6 +208,13 @@ export default function Home() {
     // In Live mode, submit real MM orders to Nado
     if (liveMode && isConnected) {
       const placeMMOrders = async () => {
+        // Check if Nado client is ready
+        if (!nadoClientReady) {
+          setOrderStatus({ type: 'error', message: 'Nado client not ready. Make sure wallet is connected to Ink network.' })
+          console.error('[Page] Nado client not ready')
+          return
+        }
+
         const productId = getProductId(config.pair)
         if (!productId) {
           setOrderStatus({ type: 'error', message: `Unknown pair: ${config.pair}` })
@@ -645,6 +653,19 @@ export default function Home() {
                   <p className="text-sm">Nado Error: {nadoError}</p>
                 </div>
               )}
+
+              {/* Nado Client Status */}
+              {liveMode && (
+                <div className={`p-2 rounded-lg text-xs flex items-center gap-2 ${
+                  nadoClientReady
+                    ? 'bg-[var(--accent-green)]/10 text-[var(--accent-green)]'
+                    : 'bg-[var(--accent-yellow)]/10 text-[var(--accent-yellow)]'
+                }`}>
+                  <div className={`w-2 h-2 rounded-full ${nadoClientReady ? 'bg-[var(--accent-green)]' : 'bg-[var(--accent-yellow)]'}`} />
+                  {nadoClientReady ? 'Nado Client Ready' : 'Nado Client Not Ready (Connect Ink Network)'}
+                </div>
+              )}
+
               <div>
                 <label className="text-sm text-[var(--foreground-muted)] mb-2 block">Trading Pair</label>
                 <select
