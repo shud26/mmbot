@@ -1,42 +1,16 @@
 'use client'
 
-import { useState, useCallback, useEffect } from 'react'
-import { useAccount, useSignTypedData } from 'wagmi'
-import {
-  NADO_PRODUCTS,
-  NADO_EIP712_DOMAIN,
-  ORDER_TYPES,
-  NadoOrderRequest,
-  NadoPlaceOrderPayload,
-  NadoProduct,
-  NadoOrderbook,
-  NadoPosition,
-  getProducts,
-  getOrderbook,
-  getPositions,
-  placeOrder,
-  cancelOrder,
-  createOrderMessage,
-  toEIP712Message,
-  toX18,
-  fromX18,
-  calculateMMOrders,
-  logOrder,
-} from '@/lib/nado'
+import { useState, useCallback, useMemo } from 'react'
+import { useAccount, usePublicClient, useWalletClient } from 'wagmi'
+import { createNadoClient, NADO_PRODUCTS, calculateMMOrders, getProductId } from '@/lib/nado'
 
 export interface UseNadoReturn {
   // State
   isLoading: boolean
   error: string | null
-  products: NadoProduct[]
-  orderbook: NadoOrderbook | null
-  positions: NadoPosition[]
   pendingOrders: { digest: string; side: 'LONG' | 'SHORT'; price: number; amount: number }[]
 
   // Actions
-  fetchProducts: () => Promise<void>
-  fetchOrderbook: (productId: number) => Promise<void>
-  fetchPositions: () => Promise<void>
   submitOrder: (
     productId: number,
     price: number,
@@ -49,7 +23,7 @@ export interface UseNadoReturn {
     orderCount: number,
     amountPerOrder: number
   ) => Promise<{ success: boolean; ordersPlaced: number; errors: string[] }>
-  cancelAllOrders: () => Promise<void>
+  cancelAllOrders: (productId: number) => Promise<void>
 
   // Helpers
   getProductId: (pair: string) => number | undefined
@@ -57,52 +31,29 @@ export interface UseNadoReturn {
 
 export function useNado(): UseNadoReturn {
   const { address, isConnected } = useAccount()
-  const { signTypedDataAsync } = useSignTypedData()
+  const publicClient = usePublicClient()
+  const { data: walletClient } = useWalletClient()
 
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [products, setProducts] = useState<NadoProduct[]>([])
-  const [orderbook, setOrderbook] = useState<NadoOrderbook | null>(null)
-  const [positions, setPositions] = useState<NadoPosition[]>([])
   const [pendingOrders, setPendingOrders] = useState<
     { digest: string; side: 'LONG' | 'SHORT'; price: number; amount: number }[]
   >([])
 
-  // Fetch products on mount
-  const fetchProducts = useCallback(async () => {
-    try {
-      setIsLoading(true)
-      setError(null)
-      const data = await getProducts()
-      setProducts(data)
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
-
-  // Fetch orderbook for a product
-  const fetchOrderbook = useCallback(async (productId: number) => {
-    try {
-      const data = await getOrderbook(productId)
-      setOrderbook(data)
-    } catch (err) {
-      console.error('Orderbook fetch error:', err)
-    }
-  }, [])
-
-  // Fetch positions for connected wallet
-  const fetchPositions = useCallback(async () => {
-    if (!address) return
+  // Create Nado client when wallet is connected
+  const nadoClient = useMemo(() => {
+    if (!walletClient || !publicClient) return null
 
     try {
-      const data = await getPositions(address)
-      setPositions(data)
+      return createNadoClient('inkMainnet', {
+        walletClient: walletClient as any,
+        publicClient: publicClient as any,
+      })
     } catch (err) {
-      console.error('Positions fetch error:', err)
+      console.error('Failed to create Nado client:', err)
+      return null
     }
-  }, [address])
+  }, [walletClient, publicClient])
 
   // Submit a single order
   const submitOrder = useCallback(
@@ -111,64 +62,54 @@ export function useNado(): UseNadoReturn {
       price: number,
       amount: number // positive = long, negative = short
     ): Promise<{ success: boolean; digest?: string; error?: string }> => {
-      if (!address || !isConnected) {
-        return { success: false, error: 'Wallet not connected' }
+      if (!address || !isConnected || !nadoClient) {
+        return { success: false, error: 'Wallet not connected or Nado client not ready' }
       }
 
       try {
         setIsLoading(true)
         setError(null)
 
-        // Create order message
-        const order = createOrderMessage(address, price, amount)
         const side = amount >= 0 ? 'LONG' : 'SHORT'
-        logOrder(order, side)
+        console.log(`[Nado] Placing ${side} order: price=${price}, amount=${amount}`)
 
-        // Sign the order with EIP712 (wagmi requires bigint for numeric fields)
-        const eip712Message = toEIP712Message(order)
-        const signature = await signTypedDataAsync({
-          domain: NADO_EIP712_DOMAIN,
-          types: ORDER_TYPES,
-          primaryType: 'Order',
-          message: eip712Message,
+        // Use SDK engine client to place order
+        const result = await nadoClient.context.engineClient.placeOrder({
+          productId,
+          order: {
+            subaccountOwner: address,
+            subaccountName: '', // Default subaccount
+            price,
+            amount: amount.toString(),
+            expiration: Math.floor(Date.now() / 1000) + 86400, // 24 hours
+            appendix: 0,
+          },
+          verifyingAddr: nadoClient.context.contractAddresses.endpoint,
+          chainId: 57073, // Ink mainnet
         })
 
-        // Build payload
-        const payload: NadoPlaceOrderPayload = {
-          place_order: {
-            product_id: productId,
-            order,
-            signature,
-            id: Date.now(),
-          },
-        }
+        console.log('[Nado] Order result:', result)
 
-        // Submit to Nado API
-        const result = await placeOrder(payload)
-
-        if (result.success && result.digest) {
-          // Track pending order
+        if (result.status === 'success') {
+          const digest = result.data?.digest || result.orderParams?.nonce || `order-${Date.now()}`
           setPendingOrders((prev) => [
             ...prev,
-            {
-              digest: result.digest!,
-              side,
-              price,
-              amount: Math.abs(amount),
-            },
+            { digest, side, price, amount: Math.abs(amount) },
           ])
+          return { success: true, digest }
+        } else {
+          return { success: false, error: 'Order failed' }
         }
-
-        return result
       } catch (err) {
         const errorMsg = (err as Error).message
+        console.error('[Nado] Order error:', errorMsg)
         setError(errorMsg)
         return { success: false, error: errorMsg }
       } finally {
         setIsLoading(false)
       }
     },
-    [address, isConnected, signTypedDataAsync]
+    [address, isConnected, nadoClient]
   )
 
   // Submit multiple market making orders (bid + ask spreads)
@@ -180,7 +121,7 @@ export function useNado(): UseNadoReturn {
       orderCount: number,
       amountPerOrder: number
     ): Promise<{ success: boolean; ordersPlaced: number; errors: string[] }> => {
-      if (!address || !isConnected) {
+      if (!address || !isConnected || !nadoClient) {
         return { success: false, ordersPlaced: 0, errors: ['Wallet not connected'] }
       }
 
@@ -213,55 +154,36 @@ export function useNado(): UseNadoReturn {
         errors,
       }
     },
-    [address, isConnected, submitOrder]
+    [address, isConnected, nadoClient, submitOrder]
   )
 
   // Cancel all pending orders
-  const cancelAllOrders = useCallback(async () => {
-    if (!address) return
+  const cancelAllOrders = useCallback(async (productId: number) => {
+    if (!nadoClient || !address) return
 
     setIsLoading(true)
 
-    for (const order of pendingOrders) {
-      try {
-        // We need the product ID - for now assume ETH-USDC
-        const productId = NADO_PRODUCTS['ETH-USDC'] || 2
-        await cancelOrder(productId, order.digest)
-      } catch (err) {
-        console.error('Cancel error:', err)
-      }
+    try {
+      // Cancel all orders for the product using engine client
+      await nadoClient.context.engineClient.cancelProductOrders({
+        subaccountOwner: address,
+        subaccountName: '',
+        productIds: [productId],
+        verifyingAddr: nadoClient.context.contractAddresses.endpoint,
+        chainId: 57073,
+      })
+      setPendingOrders([])
+    } catch (err) {
+      console.error('Cancel error:', err)
     }
 
-    setPendingOrders([])
     setIsLoading(false)
-  }, [address, pendingOrders])
-
-  // Helper: Get product ID from pair string
-  const getProductId = useCallback((pair: string): number | undefined => {
-    return NADO_PRODUCTS[pair]
-  }, [])
-
-  // Disable auto-fetch for now - API format needs adjustment
-  // useEffect(() => {
-  //   fetchProducts()
-  // }, [fetchProducts])
-
-  // useEffect(() => {
-  //   if (isConnected && address) {
-  //     fetchPositions()
-  //   }
-  // }, [isConnected, address, fetchPositions])
+  }, [nadoClient, address])
 
   return {
     isLoading,
     error,
-    products,
-    orderbook,
-    positions,
     pendingOrders,
-    fetchProducts,
-    fetchOrderbook,
-    fetchPositions,
     submitOrder,
     submitMarketMakingOrders,
     cancelAllOrders,

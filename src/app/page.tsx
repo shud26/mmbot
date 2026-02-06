@@ -96,7 +96,6 @@ export default function Home() {
     submitMarketMakingOrders,
     cancelAllOrders,
     getProductId,
-    fetchOrderbook,
   } = useNado()
 
   // Copy address to clipboard
@@ -363,9 +362,12 @@ export default function Home() {
       // Stopping bot
       if (liveMode) {
         // Cancel all pending orders when stopping in live mode
-        setOrderStatus({ type: null, message: 'Cancelling orders...' })
-        await cancelAllOrders()
-        setOrderStatus({ type: 'success', message: 'All orders cancelled' })
+        const productId = getProductId(config.pair)
+        if (productId) {
+          setOrderStatus({ type: null, message: 'Cancelling orders...' })
+          await cancelAllOrders(productId)
+          setOrderStatus({ type: 'success', message: 'All orders cancelled' })
+        }
       }
 
       if (telegramSettings.enabled && telegramSettings.botToken) {
