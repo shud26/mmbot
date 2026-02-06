@@ -20,31 +20,47 @@ export const NADO_MAINNET = 'https://gateway.nado.xyz/v2'
 // Use mainnet for real trading
 export const NADO_API = NADO_MAINNET
 
-// EIP712 Domain for signing orders (chainId as number for wagmi)
+// Contract addresses
+export const NADO_CONTRACTS = {
+  inkMainnet: {
+    endpoint: '0x05ec92D78ED421f3D3Ada77FFdE167106565974E' as `0x${string}`,
+    clearinghouse: '0xD218103918C19D0A10cf35300E4CfAfbD444c5fE' as `0x${string}`,
+  },
+  inkTestnet: {
+    endpoint: '0x0000000000000000000000000000000000000000' as `0x${string}`, // TODO: Get testnet address
+    clearinghouse: '0x0000000000000000000000000000000000000000' as `0x${string}`,
+  },
+}
+
+// EIP712 Domain for signing orders
 export const NADO_EIP712_DOMAIN = {
   name: 'Nado',
-  version: '1',
+  version: '0.0.1',
   chainId: 57073, // Ink Mainnet
+  verifyingContract: NADO_CONTRACTS.inkMainnet.endpoint,
 }
 
 // EIP712 Types for Order (wagmi requires specific format)
+// sender is bytes32 = address (20 bytes) + subaccountName (12 bytes, padded)
 export const ORDER_TYPES = {
   Order: [
-    { name: 'sender', type: 'address' },
+    { name: 'sender', type: 'bytes32' },
     { name: 'priceX18', type: 'int128' },
     { name: 'amount', type: 'int128' },
     { name: 'expiration', type: 'uint64' },
     { name: 'nonce', type: 'uint64' },
+    { name: 'appendix', type: 'uint128' },
   ],
 } as const
 
 // EIP712 Message Type (for wagmi signing - uses bigint)
 export interface NadoOrderEIP712Message {
-  sender: `0x${string}`
+  sender: `0x${string}` // bytes32 as hex string
   priceX18: bigint
   amount: bigint
   expiration: bigint
   nonce: bigint
+  appendix: bigint
 }
 
 // Product IDs on Nado (market identifiers)
@@ -57,11 +73,12 @@ export const NADO_PRODUCTS: Record<string, number> = {
 
 // Interfaces
 export interface NadoOrderRequest {
-  sender: `0x${string}`
+  sender: `0x${string}` // bytes32: address (20 bytes) + subaccountName (12 bytes padded to 0s)
   priceX18: string // Price in 18 decimals (e.g., "2500000000000000000000" for $2500)
   amount: string   // Amount in 18 decimals (positive = long, negative = short)
   expiration: string // Unix timestamp (uint64 max = 4294967295 for no expiry)
   nonce: string    // Unique nonce (usually timestamp-based)
+  appendix: string // Additional data, usually "0"
 }
 
 export interface NadoPlaceOrderPayload {
@@ -118,6 +135,24 @@ export function generateNonce(): string {
   const timestamp = Date.now()
   const random = Math.floor(Math.random() * 1000000)
   return `${timestamp}${random}`
+}
+
+// Helper: Convert address to subaccount bytes32 format
+// Subaccount = address (20 bytes) + subaccountName (12 bytes, default "default" or empty)
+export function addressToSubaccount(address: `0x${string}`, subaccountName: string = ''): `0x${string}` {
+  // Remove 0x prefix, ensure lowercase
+  const addressHex = address.slice(2).toLowerCase()
+
+  // Convert subaccount name to hex (max 12 bytes)
+  let nameHex = ''
+  for (let i = 0; i < Math.min(subaccountName.length, 12); i++) {
+    nameHex += subaccountName.charCodeAt(i).toString(16).padStart(2, '0')
+  }
+  // Pad to 12 bytes (24 hex chars)
+  nameHex = nameHex.padEnd(24, '0')
+
+  // Combine: address (40 chars) + name (24 chars) = 64 chars = 32 bytes
+  return `0x${addressHex}${nameHex}` as `0x${string}`
 }
 
 // API: Get products (markets) info
@@ -232,13 +267,17 @@ export async function cancelOrder(productId: number, digest: string): Promise<{ 
 
 // Create order message for EIP712 signing
 export function createOrderMessage(
-  sender: `0x${string}`,
+  walletAddress: `0x${string}`,
   price: number,
   amount: number, // positive = long, negative = short
-  expirationSeconds: number = 86400 // Default 24 hours
+  expirationSeconds: number = 86400, // Default 24 hours
+  subaccountName: string = '' // Default subaccount (empty = "default")
 ): NadoOrderRequest {
   const now = Math.floor(Date.now() / 1000)
   const expiration = now + expirationSeconds
+
+  // Convert wallet address to subaccount bytes32 format
+  const sender = addressToSubaccount(walletAddress, subaccountName)
 
   return {
     sender,
@@ -246,6 +285,7 @@ export function createOrderMessage(
     amount: toX18(amount),
     expiration: expiration.toString(),
     nonce: generateNonce(),
+    appendix: '0', // Default appendix
   }
 }
 
@@ -257,6 +297,7 @@ export function toEIP712Message(order: NadoOrderRequest): NadoOrderEIP712Message
     amount: BigInt(order.amount),
     expiration: BigInt(order.expiration),
     nonce: BigInt(order.nonce),
+    appendix: BigInt(order.appendix),
   }
 }
 
@@ -339,9 +380,10 @@ export function logOrder(order: NadoOrderRequest, side: 'LONG' | 'SHORT'): void 
   const amountNum = fromX18(order.amount)
 
   console.log(`[Nado] ${side} Order:`)
-  console.log(`  Sender: ${order.sender}`)
+  console.log(`  Sender (subaccount): ${order.sender}`)
   console.log(`  Price: $${priceNum.toFixed(2)}`)
   console.log(`  Amount: ${Math.abs(amountNum).toFixed(4)}`)
   console.log(`  Expires: ${new Date(parseInt(order.expiration) * 1000).toISOString()}`)
   console.log(`  Nonce: ${order.nonce}`)
+  console.log(`  Appendix: ${order.appendix}`)
 }
