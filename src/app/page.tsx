@@ -2,12 +2,13 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
-import { Moon, Sun, Settings, TrendingUp, TrendingDown, Activity, Zap, BarChart3, Clock, DollarSign, Send, Save, Loader2, Wallet, ExternalLink, Copy, Check } from 'lucide-react'
+import { Moon, Sun, Settings, TrendingUp, TrendingDown, Activity, Zap, BarChart3, Clock, DollarSign, Send, Save, Loader2, Wallet, ExternalLink, Copy, Check, Radio, AlertTriangle } from 'lucide-react'
 import { ConnectButton } from '@rainbow-me/rainbowkit'
 import { useAccount, useBalance, useChainId, useSwitchChain } from 'wagmi'
 import { formatEther } from 'viem'
 import { supabase, saveTrade, getTrades, getStats, Trade as DBTrade } from '@/lib/supabase'
 import { inkChain, inkSepolia } from '@/lib/wagmi'
+import { useNado } from '@/hooks/useNado'
 
 interface BotConfig {
   pair: string
@@ -47,6 +48,8 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [liveMode, setLiveMode] = useState(false) // Demo vs Live mode
+  const [orderStatus, setOrderStatus] = useState<{ type: 'success' | 'error' | null; message: string }>({ type: null, message: '' })
   const [config, setConfig] = useState<BotConfig>({
     pair: 'ETH-USDC',
     margin: 100,
@@ -83,6 +86,18 @@ export default function Home() {
   const { data: ethBalance } = useBalance({
     address: address,
   })
+
+  // Nado DEX hook
+  const {
+    isLoading: nadoLoading,
+    error: nadoError,
+    pendingOrders,
+    submitOrder,
+    submitMarketMakingOrders,
+    cancelAllOrders,
+    getProductId,
+    fetchOrderbook,
+  } = useNado()
 
   // Copy address to clipboard
   const copyAddress = () => {
@@ -186,10 +201,53 @@ export default function Home() {
     return () => clearInterval(interval)
   }, [])
 
-  // Simulate bot activity when running
+  // Bot activity when running
   useEffect(() => {
     if (!isRunning) return
 
+    // In Live mode, submit real MM orders to Nado
+    if (liveMode && isConnected) {
+      const placeMMOrders = async () => {
+        const productId = getProductId(config.pair)
+        if (!productId) {
+          setOrderStatus({ type: 'error', message: `Unknown pair: ${config.pair}` })
+          return
+        }
+
+        // Calculate position size based on margin and leverage
+        const positionValue = config.margin * config.leverage
+        const amountPerOrder = positionValue / config.orderCount / currentPrice
+
+        setOrderStatus({ type: null, message: 'Submitting orders...' })
+
+        const result = await submitMarketMakingOrders(
+          productId,
+          currentPrice,
+          config.spread,
+          config.orderCount,
+          amountPerOrder
+        )
+
+        if (result.success) {
+          setOrderStatus({ type: 'success', message: `${result.ordersPlaced} orders placed!` })
+
+          // Send telegram notification
+          if (telegramSettings.enabled && telegramSettings.notifyOnTrade) {
+            sendTelegram(`🚀 <b>MM Orders Placed</b>\n\n${config.pair}\nOrders: ${result.ordersPlaced}\nSpread: ${config.spread}%\nAmount/order: ${amountPerOrder.toFixed(4)}`)
+          }
+        } else {
+          setOrderStatus({ type: 'error', message: result.errors.join(', ') || 'Order failed' })
+        }
+      }
+
+      placeMMOrders()
+
+      // In live mode, we don't continuously place orders - just once on start
+      // The orders will sit on the orderbook until filled or cancelled
+      return
+    }
+
+    // Demo mode: Simulate trades
     const interval = setInterval(async () => {
       const side = Math.random() > 0.5 ? 'LONG' : 'SHORT'
       const pnl = (Math.random() - 0.4) * 2
@@ -243,7 +301,7 @@ export default function Home() {
     }, 3000)
 
     return () => clearInterval(interval)
-  }, [isRunning, currentPrice, config, telegramSettings, sendTelegram, stats.totalPnL])
+  }, [isRunning, liveMode, isConnected, currentPrice, config, telegramSettings, sendTelegram, stats.totalPnL, getProductId, submitMarketMakingOrders])
 
   // Uptime counter
   useEffect(() => {
@@ -293,17 +351,28 @@ export default function Home() {
     }
   }
 
-  const handleStartStop = () => {
+  const handleStartStop = async () => {
     if (!isRunning) {
+      // Starting bot
       if (telegramSettings.enabled && telegramSettings.botToken) {
-        sendTelegram('🚀 <b>Nado MM Bot Started!</b>\n\nPair: ' + config.pair + '\nMargin: $' + config.margin + '\nLeverage: ' + config.leverage + 'x')
+        const modeText = liveMode ? '🔴 LIVE' : '🟢 DEMO'
+        sendTelegram(`🚀 <b>Nado MM Bot Started!</b>\n\nMode: ${modeText}\nPair: ${config.pair}\nMargin: $${config.margin}\nLeverage: ${config.leverage}x`)
       }
+      setIsRunning(true)
     } else {
+      // Stopping bot
+      if (liveMode) {
+        // Cancel all pending orders when stopping in live mode
+        setOrderStatus({ type: null, message: 'Cancelling orders...' })
+        await cancelAllOrders()
+        setOrderStatus({ type: 'success', message: 'All orders cancelled' })
+      }
+
       if (telegramSettings.enabled && telegramSettings.botToken) {
         sendTelegram('🛑 <b>Nado MM Bot Stopped</b>\n\nTotal PnL: ' + (stats.totalPnL >= 0 ? '+' : '') + '$' + stats.totalPnL.toFixed(2) + '\nTrades: ' + stats.tradesCount)
       }
+      setIsRunning(false)
     }
-    setIsRunning(!isRunning)
   }
 
   return (
@@ -536,6 +605,44 @@ export default function Home() {
             </h2>
 
             <div className="space-y-4">
+              {/* Live/Demo Mode Toggle */}
+              <div className="flex items-center justify-between p-3 rounded-xl bg-[var(--background)]">
+                <div className="flex items-center gap-2">
+                  <Radio className={`w-4 h-4 ${liveMode ? 'text-[var(--accent-red)]' : 'text-[var(--accent-green)]'}`} />
+                  <span className="font-medium">{liveMode ? 'LIVE MODE' : 'DEMO MODE'}</span>
+                </div>
+                <button
+                  onClick={() => setLiveMode(!liveMode)}
+                  disabled={isRunning}
+                  className={`toggle ${liveMode ? 'active' : ''} ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+                />
+              </div>
+
+              {liveMode && (
+                <div className="flex items-start gap-2 p-3 rounded-xl bg-[var(--accent-red)]/10 border border-[var(--accent-red)]/30">
+                  <AlertTriangle className="w-5 h-5 text-[var(--accent-red)] flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-[var(--accent-red)]">
+                    Live mode will submit real orders to Nado DEX. Use with caution!
+                  </p>
+                </div>
+              )}
+
+              {/* Order Status */}
+              {orderStatus.type && (
+                <div className={`p-3 rounded-xl ${
+                  orderStatus.type === 'success'
+                    ? 'bg-[var(--accent-green)]/10 text-[var(--accent-green)]'
+                    : 'bg-[var(--accent-red)]/10 text-[var(--accent-red)]'
+                }`}>
+                  <p className="text-sm">{orderStatus.message}</p>
+                </div>
+              )}
+
+              {nadoError && (
+                <div className="p-3 rounded-xl bg-[var(--accent-red)]/10 text-[var(--accent-red)]">
+                  <p className="text-sm">Nado Error: {nadoError}</p>
+                </div>
+              )}
               <div>
                 <label className="text-sm text-[var(--foreground-muted)] mb-2 block">Trading Pair</label>
                 <select
@@ -604,17 +711,37 @@ export default function Home() {
 
               <button
                 onClick={handleStartStop}
-                disabled={!isConnected}
-                className={`w-full py-3.5 rounded-xl font-semibold text-base transition-all ${
-                  !isConnected
+                disabled={!isConnected || nadoLoading}
+                className={`w-full py-3.5 rounded-xl font-semibold text-base transition-all flex items-center justify-center gap-2 ${
+                  !isConnected || nadoLoading
                     ? 'bg-[var(--card-bg)] text-[var(--foreground-dim)] cursor-not-allowed'
                     : isRunning
                     ? 'btn-danger'
+                    : liveMode
+                    ? 'bg-[var(--accent-red)] hover:bg-red-500 text-white'
                     : 'btn-primary'
                 }`}
               >
-                {!isConnected ? 'Connect Wallet First' : isRunning ? 'Stop Bot' : 'Start Bot'}
+                {nadoLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                {!isConnected
+                  ? 'Connect Wallet First'
+                  : nadoLoading
+                  ? 'Processing...'
+                  : isRunning
+                  ? 'Stop Bot'
+                  : liveMode
+                  ? '🔴 Start Live Trading'
+                  : 'Start Bot'}
               </button>
+
+              {/* Pending Orders Count */}
+              {pendingOrders.length > 0 && (
+                <div className="mt-3 p-3 rounded-xl bg-[var(--accent-primary)]/10">
+                  <p className="text-sm text-[var(--accent-primary)] text-center">
+                    📋 {pendingOrders.length} pending orders on Nado
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -776,7 +903,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="mt-8 pt-6 border-t border-[var(--card-border)] text-center">
         <p className="text-sm text-[var(--foreground-dim)]">
-          Nado MM Bot v0.4 · Ink Chain · {isConnected ? 'Wallet Connected' : 'Demo Mode'}
+          Nado MM Bot v0.5 · Ink Chain · {liveMode ? '🔴 LIVE' : '🟢 DEMO'} · {isConnected ? 'Wallet Connected' : 'Wallet Not Connected'}
         </p>
       </footer>
 
