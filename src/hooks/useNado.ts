@@ -125,7 +125,9 @@ export function useNado(): UseNadoReturn {
 
         // Create order data
         const sender = createSender(address)
-        const priceX18 = parseUnits(price.toFixed(6), 18)
+        // Round price to 0.1 increment (price_increment_x18 = 10^17)
+        const roundedPrice = Math.round(price * 10) / 10
+        const priceX18 = parseUnits(roundedPrice.toFixed(1), 18)
         const amountX18 = parseUnits(Math.abs(amount).toFixed(6), 18) * (amount >= 0 ? BigInt(1) : BigInt(-1))
         const expiration = BigInt(Math.floor(Date.now() / 1000) + 86400) // 24 hours
         const nonce = createNonce()
