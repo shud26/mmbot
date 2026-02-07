@@ -70,11 +70,12 @@ function createSender(address: `0x${string}`, subaccountName: string = 'default'
   return `0x${addressBytes}${nameHex}` as `0x${string}`
 }
 
-// Create nonce: (milliseconds << 20) + random
+// Create nonce: (recv_time_millis << 20) + random
+// recv_time should be slightly in the future to account for network latency
 function createNonce(): bigint {
-  const ms = BigInt(Date.now())
+  const recvTime = BigInt(Date.now() + 5000) // 5 seconds buffer for network latency
   const random = BigInt(Math.floor(Math.random() * 1000000))
-  return (ms << BigInt(20)) + random
+  return (recvTime << BigInt(20)) + random
 }
 
 // Create appendix: version=1, order type, etc.
