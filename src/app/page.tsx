@@ -90,6 +90,7 @@ export default function Home() {
     error: nadoError,
     clientReady: nadoClientReady,
     pendingOrders,
+    submitOrder,
     submitMarketMakingOrders,
     cancelAllOrders,
     getProductId,
@@ -173,7 +174,7 @@ export default function Home() {
     }
 
     if (liveMode && isConnected && !ordersPlaced) {
-      const placeMMOrders = async () => {
+      const placeTestOrder = async () => {
         if (!nadoClientReady) {
           setOrderStatus({ type: 'error', message: 'Nado client not ready' })
           return
@@ -183,23 +184,27 @@ export default function Home() {
           setOrderStatus({ type: 'error', message: `Unknown pair: ${config.pair}` })
           return
         }
-        // Use current price at the moment of order placement
+        // Test: Submit just ONE order
         const priceNow = currentPrice
-        const positionValue = config.margin * config.leverage
-        const amountPerOrder = positionValue / config.orderCount / priceNow
-        setOrderStatus({ type: null, message: 'Submitting orders...' })
-        setOrdersPlaced(true) // Mark as placed BEFORE calling API
-        const result = await submitMarketMakingOrders(productId, priceNow, config.spread, config.orderCount, amountPerOrder)
+        const testAmount = 0.01 // Small test amount
+        const bidPrice = priceNow * 0.99 // 1% below current price
+
+        setOrderStatus({ type: null, message: 'Signing order... (check wallet)' })
+        setOrdersPlaced(true)
+
+        console.log('[Test] Submitting single order:', { productId, bidPrice, testAmount })
+
+        const result = await submitOrder(productId, bidPrice, testAmount)
+
+        console.log('[Test] Result:', result)
+
         if (result.success) {
-          setOrderStatus({ type: 'success', message: `${result.ordersPlaced} orders placed` })
-          if (telegramSettings.enabled && telegramSettings.notifyOnTrade) {
-            sendTelegram(`🚀 MM Orders: ${config.pair}\nOrders: ${result.ordersPlaced}\nSpread: ${config.spread}%`)
-          }
+          setOrderStatus({ type: 'success', message: `Order placed! Digest: ${result.digest?.slice(0, 10)}...` })
         } else {
-          setOrderStatus({ type: 'error', message: result.errors.join(', ') || 'Order failed' })
+          setOrderStatus({ type: 'error', message: result.error || 'Order failed' })
         }
       }
-      placeMMOrders()
+      placeTestOrder()
       return
     }
   }, [isRunning, liveMode, isConnected, ordersPlaced, nadoClientReady, config.pair, config.margin, config.leverage, config.orderCount, config.spread])

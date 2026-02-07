@@ -139,18 +139,21 @@ export function useNado(): UseNadoReturn {
           appendix,
         }
 
+        const domain = getDomain(productId)
         console.log('[Nado] Order data:', order)
-        console.log('[Nado] Domain:', getDomain(productId))
+        console.log('[Nado] Domain:', domain)
+        console.log('[Nado] Types:', ORDER_TYPES)
+        console.log('[Nado] Requesting signature from wallet...')
 
         // Sign with EIP712
         const signature = await walletClient.signTypedData({
-          domain: getDomain(productId),
+          domain,
           types: ORDER_TYPES,
           primaryType: 'Order',
           message: order,
         })
 
-        console.log('[Nado] Signature:', signature)
+        console.log('[Nado] Signature received:', signature)
 
         // Submit to API
         const requestBody = {
