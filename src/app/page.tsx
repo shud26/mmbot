@@ -163,10 +163,16 @@ export default function Home() {
     return () => clearInterval(interval)
   }, [])
 
-  useEffect(() => {
-    if (!isRunning) return
+  // Live mode: place orders once when starting
+  const [ordersPlaced, setOrdersPlaced] = useState(false)
 
-    if (liveMode && isConnected) {
+  useEffect(() => {
+    if (!isRunning) {
+      setOrdersPlaced(false)
+      return
+    }
+
+    if (liveMode && isConnected && !ordersPlaced) {
       const placeMMOrders = async () => {
         if (!nadoClientReady) {
           setOrderStatus({ type: 'error', message: 'Nado client not ready' })
@@ -177,10 +183,13 @@ export default function Home() {
           setOrderStatus({ type: 'error', message: `Unknown pair: ${config.pair}` })
           return
         }
+        // Use current price at the moment of order placement
+        const priceNow = currentPrice
         const positionValue = config.margin * config.leverage
-        const amountPerOrder = positionValue / config.orderCount / currentPrice
+        const amountPerOrder = positionValue / config.orderCount / priceNow
         setOrderStatus({ type: null, message: 'Submitting orders...' })
-        const result = await submitMarketMakingOrders(productId, currentPrice, config.spread, config.orderCount, amountPerOrder)
+        setOrdersPlaced(true) // Mark as placed BEFORE calling API
+        const result = await submitMarketMakingOrders(productId, priceNow, config.spread, config.orderCount, amountPerOrder)
         if (result.success) {
           setOrderStatus({ type: 'success', message: `${result.ordersPlaced} orders placed` })
           if (telegramSettings.enabled && telegramSettings.notifyOnTrade) {
@@ -193,8 +202,12 @@ export default function Home() {
       placeMMOrders()
       return
     }
+  }, [isRunning, liveMode, isConnected, ordersPlaced, nadoClientReady, config.pair, config.margin, config.leverage, config.orderCount, config.spread])
 
-    // Demo mode
+  // Demo mode: simulated trades
+  useEffect(() => {
+    if (!isRunning || liveMode) return
+
     const interval = setInterval(async () => {
       const side = Math.random() > 0.5 ? 'LONG' : 'SHORT'
       const pnl = (Math.random() - 0.4) * 2
@@ -229,7 +242,7 @@ export default function Home() {
     }, 3000)
 
     return () => clearInterval(interval)
-  }, [isRunning, liveMode, isConnected, currentPrice, config, telegramSettings, sendTelegram, getProductId, submitMarketMakingOrders, nadoClientReady])
+  }, [isRunning, liveMode, currentPrice, config, telegramSettings, sendTelegram])
 
   useEffect(() => {
     if (!isRunning) return
